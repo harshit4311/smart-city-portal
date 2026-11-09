@@ -1,0 +1,98 @@
+Smart City Portal - integration demo against http://localhost:8080
+
+1. Gateway health (public)
+   GET /health -> 200 
+      {
+        "gateway": "ok",
+        "services": {
+          "users": "ok",
+          "complaints": "ok",
+          "geo": "ok"
+        }
+      }
+
+2. Gateway security: request without an API key is rejected
+   GET /api/complaints -> 401 
+      {
+        "error": {
+          "code": "API_KEY_MISSING",
+          "message": "Send your API key in the \"x-api-key\" header"
+        },
+        "requestId": "5e4598d3-b22d-45ba-95b2-777425c056e9"
+      }
+
+3. Admin logs in (JWT issued by the user service)
+   POST /api/users/login -> 200 users-service
+      token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...  role: admin
+
+4. Citizen registers
+   POST /api/users/register -> 201 users-service
+      user: citizen.1793738935260@demo.local  role: citizen
+
+5. Geocoding with OpenStreetMap: address -> latitude/longitude
+   GET /api/maps/geocode?address=MG%20Road%2C%20Bengaluru -> 200 geo-service
+      {
+        "query": "MG Road, Bengaluru",
+        "location": {
+          "lat": 12.9755264,
+          "lng": 77.6067902,
+          "displayName": "Mahatma Gandhi Road, Shanthala Nagar, Ashokanagar, Bengaluru Central City Corporation, Bengaluru, Bangalore North, Bengaluru Urban, Karnataka, 560001, India",
+          "provider": "nominatim"
+        }
+      }
+
+6. Citizen files 3 complaints (each address geocoded automatically)
+   POST /api/complaints -> 201 complaints-service
+      cmp_5b1fe4eb-887f-4a4a-9e4c-a34ca1f54f79  MG Road, Bengaluru       -> 12.9755264, 77.6067902
+   POST /api/complaints -> 201 complaints-service
+      cmp_367ef848-2168-4cab-8542-fc4159985a93  Brigade Road, Bengaluru  -> 12.9683494, 77.6060557
+   POST /api/complaints -> 201 complaints-service
+      cmp_7729d5a9-ddd4-4144-b9ff-362b5feeaad5  Whitefield, Bengaluru    -> 12.9957428, 77.7579489
+
+7. Nearby complaints: within 3 km of Cubbon Park
+   GET /api/complaints/nearby?address=Cubbon%20Park%2C%20Bengaluru&radiusKm=3 -> 200 complaints-service
+      centre: 12.9742535, 77.5921906  radius: 3 km  found: 2
+      - Large pothole near metro station   1.588 km
+      - Overflowing garbage bins           1.64 km
+
+8. Distance between two places
+   GET /api/maps/distance?from=MG%20Road%2C%20Bengaluru&to=Whitefield%2C%20Bengaluru -> 200 geo-service
+      MG Road -> Whitefield: 16.532 km
+
+9. Role-based access: citizen tries to delete a complaint
+   DELETE /api/complaints/cmp_5b1fe4eb-887f-4a4a-9e4c-a34ca1f54f79 -> 403 complaints-service
+      {
+        "error": {
+          "code": "FORBIDDEN",
+          "message": "This action requires one of these roles: admin"
+        },
+        "requestId": "4118979f-3fda-4a29-967e-aa98537fcd37"
+      }
+
+10. Admin updates complaint status -> SMS sent to the citizen
+   PATCH /api/complaints/cmp_5b1fe4eb-887f-4a4a-9e4c-a34ca1f54f79/status -> 200 complaints-service
+      status: in_progress
+      {
+        "id": "ntf_06d84db5-d50b-4763-a0b4-46912e02e12a",
+        "channel": "sms",
+        "to": "+91******3210",
+        "provider": "mock",
+        "status": "sent"
+      }
+
+11. SMS notification log (admin only)
+   GET /api/complaints/notifications -> 200 complaints-service
+      {
+        "id": "ntf_06d84db5-d50b-4763-a0b4-46912e02e12a",
+        "complaintId": "cmp_5b1fe4eb-887f-4a4a-9e4c-a34ca1f54f79",
+        "channel": "sms",
+        "body": "Smart City Portal: your complaint \"Large pothole near metro station\" (cmp_5b1fe4eb) is now IN PROGRESS. Note: Repair crew assigned for tomorrow morning",
+        "createdAt": "2026-11-03T20:48:58.359Z",
+        "to": "+91******3210",
+        "provider": "mock",
+        "status": "sent",
+        "providerMessageId": "mock-958d8299-47c1-4868-8c39-50037d449d0f"
+      }
+
+Demo complete. Swagger UI: http://localhost:8080/docs   ReDoc: http://localhost:8080/redoc
+

@@ -1,0 +1,754 @@
+openapi: 3.0.3
+info:
+  title: Smart City Portal API
+  version: 2.0.0
+  description: |
+    Public API of the Smart City Portal. Citizens report civic problems (potholes, garbage,
+    broken streetlights...). Officers and admins manage them. Every request goes through the
+    **API Gateway**, which routes it to one of three services:
+
+    | Path | Service |
+    |---|---|
+    | `/api/users/*` | User service: registration, login, roles |
+    | `/api/complaints/*` | Complaint service: complaints, status workflow, SMS, nearby search |
+    | `/api/maps/*` | Geo service: geocoding via OpenStreetMap (or Google Maps) |
+
+    ## Authentication: two layers
+    1. **API key** (`x-api-key` header). Required on every `/api/*` request and checked by
+       the gateway. It identifies the *client application* and its rate-limit quota.
+    2. **JWT bearer token** (`Authorization: Bearer <token>`). Identifies the *user*. Get one
+       from `POST /api/users/login` (or `register`). Tokens are HS256-signed and expire after
+       1 hour by default. Each service verifies the token itself.
+
+    In Swagger UI, click **Authorize** and fill in both values.
+
+    ## Roles (authorization)
+    | Role | Can do |
+    |---|---|
+    | `citizen` | Register, log in, create complaints, view **own** complaints, nearby search, maps |
+    | `officer` | Everything a citizen can, plus view **all** complaints and change complaint status |
+    | `admin` | Everything an officer can, plus delete complaints, list users, change roles, view the SMS log |
+
+    New accounts are always `citizen`; only an admin can promote a user.
+
+    ## Rate limits
+    * General: **100 requests per minute per API key**.
+    * Login and register: **10 requests per minute per IP**, to slow down password guessing.
+
+    Responses include an IETF `RateLimit` header. When the limit is exceeded, the API returns
+    `429` with a `Retry-After` header.
+
+    ## Errors
+    Every error has the same shape:
+    `{ "error": { "code": "...", "message": "...", "details": [...] }, "requestId": "..." }`.
+    Quote the `x-request-id` response header when reporting a problem.
+  contact:
+    name: Harshit Shah (2023EBCS665)
+servers:
+  - url: /
+    description: The gateway serving these docs
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Gateway
+    description: Gateway-level endpoints (no API key needed)
+  - name: Users
+    description: Routed to the user service
+  - name: Complaints
+    description: Routed to the complaint service
+  - name: Maps
+    description: Routed to the geo service (OpenStreetMap Nominatim / Google Maps)
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Gateway]
+      summary: Health of the gateway and every downstream service
+      security: []
+      responses:
+        '200':
+          description: All services are up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+              example: { gateway: ok, services: { users: ok, complaints: ok, geo: ok } }
+        '503':
+          description: At least one service is down
+          content:
+            application/json:
+              example: { gateway: ok, services: { users: ok, complaints: unreachable, geo: ok } }
+
+  /api/users/register:
+    post:
+      operationId: registerUser
+      tags: [Users]
+      summary: Register a new citizen account
+      description: Creates a `citizen` account and returns a JWT so the user is logged in immediately. Rate limited to 10 requests per minute per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+            example: { name: Asha Rao, email: asha@example.com, password: S3cure!pass, phone: '+919876543210' }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/ApiKeyMissing' }
+        '403': { $ref: '#/components/responses/ApiKeyInvalid' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: CONFLICT, message: An account with this email already exists } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/users/login:
+    post:
+      operationId: loginUser
+      tags: [Users]
+      summary: Log in and receive a JWT
+      description: Rate limited to 10 requests per minute per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            example: { email: asha@example.com, password: S3cure!pass }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Wrong email/password, or missing API key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                badCredentials:
+                  summary: Wrong email or password
+                  value: { error: { code: UNAUTHORIZED, message: Invalid email or password } }
+                missingApiKey:
+                  summary: No x-api-key header
+                  value: { error: { code: API_KEY_MISSING, message: Send your API key in the "x-api-key" header } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/users/me:
+    get:
+      operationId: getCurrentUser
+      tags: [Users]
+      summary: Get the logged-in user's profile
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      responses:
+        '200':
+          description: The current user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/users:
+    get:
+      operationId: listUsers
+      tags: [Users]
+      summary: List all users (admin only)
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      responses:
+        '200':
+          description: All users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 2 }
+                  users: { type: array, items: { $ref: '#/components/schemas/User' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/users/{id}/role:
+    patch:
+      operationId: updateUserRole
+      tags: [Users]
+      summary: Change a user's role (admin only)
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [citizen, officer, admin] }
+            example: { role: officer }
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/complaints:
+    post:
+      operationId: createComplaint
+      tags: [Complaints]
+      summary: Create a complaint (address is geocoded automatically)
+      description: |
+        The `address` is converted to latitude/longitude by the configured geocoding provider
+        (OpenStreetMap Nominatim by default). Coordinates such as `"12.9758,77.6045"` are
+        also accepted and skip the external call.
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateComplaintRequest' }
+            example:
+              title: Large pothole near metro station
+              description: Deep pothole in the left lane, two-wheelers are swerving around it.
+              category: pothole
+              address: MG Road, Bengaluru
+      responses:
+        '201':
+          description: Complaint created
+          headers:
+            Location: { schema: { type: string }, description: URL of the new complaint }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Complaint' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/AddressNotFound' }
+        '502': { $ref: '#/components/responses/GeocoderUnavailable' }
+    get:
+      operationId: listComplaints
+      tags: [Complaints]
+      summary: List complaints
+      description: Citizens get only their own complaints; officers and admins get all of them.
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/Status' } }
+        - { name: category, in: query, schema: { $ref: '#/components/schemas/Category' } }
+      responses:
+        '200':
+          description: Complaints, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 1 }
+                  complaints: { type: array, items: { $ref: '#/components/schemas/Complaint' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/complaints/nearby:
+    get:
+      operationId: findNearbyComplaints
+      tags: [Complaints]
+      summary: Complaints within X km of a point or an address
+      description: |
+        Give **either** `lat` + `lng` **or** an `address` (which is geocoded). Results are
+        sorted by distance and show public fields only (not who reported them).
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - { name: lat, in: query, schema: { type: number, minimum: -90, maximum: 90 }, example: 12.9716 }
+        - { name: lng, in: query, schema: { type: number, minimum: -180, maximum: 180 }, example: 77.5946 }
+        - { name: address, in: query, schema: { type: string }, example: 'Cubbon Park, Bengaluru' }
+        - { name: radiusKm, in: query, schema: { type: number, minimum: 0.1, maximum: 50, default: 2 } }
+      responses:
+        '200':
+          description: Nearby complaints
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NearbyResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/AddressNotFound' }
+
+  /api/complaints/notifications:
+    get:
+      operationId: listSmsNotifications
+      tags: [Complaints]
+      summary: SMS notification log (admin only)
+      description: Every SMS the complaint service has sent or tried to send. Phone numbers are masked.
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      responses:
+        '200':
+          description: Notifications, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider: { type: string, example: mock }
+                  count: { type: integer, example: 1 }
+                  notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/complaints/{id}:
+    get:
+      operationId: getComplaint
+      tags: [Complaints]
+      summary: Get one complaint
+      description: Citizens can only view their own complaints.
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ComplaintId'
+      responses:
+        '200':
+          description: The complaint
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Complaint' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteComplaint
+      tags: [Complaints]
+      summary: Delete a complaint (admin only)
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ComplaintId'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: FORBIDDEN, message: 'This action requires one of these roles: admin' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/complaints/{id}/status:
+    patch:
+      operationId: updateComplaintStatus
+      tags: [Complaints]
+      summary: Change complaint status (officer or admin) and SMS the citizen
+      description: |
+        Allowed transitions: `open → in_progress | rejected`, `in_progress → resolved | rejected`.
+        `resolved` and `rejected` are final. After the change, an SMS is sent to the phone
+        number of the citizen who raised the complaint. An SMS failure does **not** undo the
+        status change; it is recorded with `status: failed`.
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ComplaintId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusUpdateRequest' }
+            example: { status: in_progress, note: Repair crew assigned for tomorrow morning }
+      responses:
+        '200':
+          description: Status changed and SMS attempted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusUpdateResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Transition not allowed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: CONFLICT, message: 'Cannot change status from "resolved" to "open". Allowed: none (complaint is closed)' } }
+
+  /api/maps/geocode:
+    get:
+      operationId: geocodeAddress
+      tags: [Maps]
+      summary: Address → latitude/longitude
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - { name: address, in: query, required: true, schema: { type: string }, example: 'MG Road, Bengaluru' }
+      responses:
+        '200':
+          description: Location found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeocodeResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/AddressNotFound' }
+        '502': { $ref: '#/components/responses/GeocoderUnavailable' }
+
+  /api/maps/reverse:
+    get:
+      operationId: reverseGeocode
+      tags: [Maps]
+      summary: Latitude/longitude → address
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number }, example: 12.9758 }
+        - { name: lng, in: query, required: true, schema: { type: number }, example: 77.6045 }
+      responses:
+        '200':
+          description: Address found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  location: { $ref: '#/components/schemas/Location' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: No address at these coordinates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: LOCATION_NOT_FOUND, message: No address found for these coordinates } }
+        '502': { $ref: '#/components/responses/GeocoderUnavailable' }
+
+  /api/maps/distance:
+    get:
+      operationId: getDistance
+      tags: [Maps]
+      summary: Straight-line distance between two places
+      description: '`from` and `to` can each be an address or `"lat,lng"`.'
+      security:
+        - ApiKeyAuth: []
+          BearerAuth: []
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string }, example: 'MG Road, Bengaluru' }
+        - { name: to, in: query, required: true, schema: { type: string }, example: '12.9698,77.75' }
+      responses:
+        '200':
+          description: Distance in km (haversine formula)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { $ref: '#/components/schemas/Location' }
+                  to: { $ref: '#/components/schemas/Location' }
+                  distanceKm: { type: number, example: 15.851 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/AddressNotFound' }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Client API key, checked by the gateway. Configured with the `API_KEYS` environment variable.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User token from `POST /api/users/login`. Claims are `sub` (user ID), `role`, `name`, `iss` and `exp`.
+
+  parameters:
+    ComplaintId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: cmp_3f1c2a9e-6d0b-4c3e-9a7e-2b8f1d0c4e55
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: usr_8a2d4f10-1b3c-4e5f-9a8b-7c6d5e4f3a2b
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying
+      schema: { type: integer, example: 42 }
+
+  schemas:
+    Role: { type: string, enum: [citizen, officer, admin] }
+    Status: { type: string, enum: [open, in_progress, resolved, rejected] }
+    Category: { type: string, enum: [pothole, garbage, streetlight, water, drainage, traffic, other] }
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password, phone]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 80 }
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 8, maxLength: 128 }
+        phone: { type: string, pattern: '^\+[1-9]\d{7,14}$', description: E.164 format, example: '+919876543210' }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, example: usr_8a2d4f10-1b3c-4e5f-9a8b-7c6d5e4f3a2b }
+        name: { type: string, example: Asha Rao }
+        email: { type: string, example: asha@example.com }
+        phone: { type: string, example: '+919876543210' }
+        role: { $ref: '#/components/schemas/Role' }
+        createdAt: { type: string, format: date-time }
+
+    AuthResponse:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        token: { type: string, example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... }
+        tokenType: { type: string, example: Bearer }
+
+    LoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/AuthResponse'
+        - type: object
+          properties:
+            expiresIn: { type: string, example: 1h }
+
+    Location:
+      type: object
+      properties:
+        lat: { type: number, example: 12.9758 }
+        lng: { type: number, example: 77.6045 }
+        displayName: { type: string, example: 'Mahatma Gandhi Road, Bengaluru, Karnataka, India' }
+        provider: { type: string, enum: [nominatim, google, mock, coordinates], example: nominatim }
+        cached: { type: boolean, description: True when served from the geocoding cache }
+
+    CreateComplaintRequest:
+      type: object
+      required: [title, description, category, address]
+      properties:
+        title: { type: string, minLength: 5, maxLength: 120 }
+        description: { type: string, minLength: 10, maxLength: 2000 }
+        category: { $ref: '#/components/schemas/Category' }
+        address: { type: string, minLength: 3, maxLength: 300, description: 'Street address, or "lat,lng"' }
+
+    HistoryEntry:
+      type: object
+      properties:
+        status: { $ref: '#/components/schemas/Status' }
+        changedBy: { type: string, description: User ID }
+        note: { type: string }
+        at: { type: string, format: date-time }
+
+    Complaint:
+      type: object
+      properties:
+        id: { type: string, example: cmp_3f1c2a9e-6d0b-4c3e-9a7e-2b8f1d0c4e55 }
+        title: { type: string, example: Large pothole near metro station }
+        description: { type: string }
+        category: { $ref: '#/components/schemas/Category' }
+        address: { type: string, example: 'MG Road, Bengaluru' }
+        location: { $ref: '#/components/schemas/Location' }
+        status: { $ref: '#/components/schemas/Status' }
+        userId: { type: string }
+        history: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    StatusUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/Status' }
+        note: { type: string, maxLength: 300, description: Included in the SMS }
+
+    StatusUpdateResponse:
+      type: object
+      properties:
+        complaint: { $ref: '#/components/schemas/Complaint' }
+        notification:
+          type: object
+          properties:
+            id: { type: string, example: ntf_0d9e8c7b-6a5f-4e3d-2c1b-0a9f8e7d6c5b }
+            channel: { type: string, example: sms }
+            to: { type: string, description: Masked phone number, example: '+91******3210' }
+            provider: { type: string, enum: [mock, twilio], example: mock }
+            status: { type: string, enum: [sent, failed], example: sent }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        complaintId: { type: string }
+        channel: { type: string, example: sms }
+        to: { type: string, example: '+91******3210' }
+        body: { type: string, example: 'Smart City Portal: your complaint "Large pothole near metro station" (cmp_3f1c2a9e) is now IN PROGRESS. Note: Repair crew assigned for tomorrow morning' }
+        provider: { type: string, example: twilio }
+        status: { type: string, enum: [sent, failed] }
+        providerMessageId: { type: string, example: SM1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c }
+        error: { type: string, description: Present when status is failed }
+        createdAt: { type: string, format: date-time }
+
+    NearbyComplaint:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        category: { $ref: '#/components/schemas/Category' }
+        status: { $ref: '#/components/schemas/Status' }
+        location: { $ref: '#/components/schemas/Location' }
+        createdAt: { type: string, format: date-time }
+        distanceKm: { type: number, example: 1.243 }
+
+    NearbyResponse:
+      type: object
+      properties:
+        center: { $ref: '#/components/schemas/Location' }
+        radiusKm: { type: number, example: 2 }
+        count: { type: integer, example: 1 }
+        complaints: { type: array, items: { $ref: '#/components/schemas/NearbyComplaint' } }
+
+    GeocodeResponse:
+      type: object
+      properties:
+        query: { type: string, example: 'MG Road, Bengaluru' }
+        location: { $ref: '#/components/schemas/Location' }
+
+    HealthResponse:
+      type: object
+      properties:
+        gateway: { type: string, example: ok }
+        services:
+          type: object
+          additionalProperties: { type: string }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+        requestId: { type: string, format: uuid }
+
+  responses:
+    ValidationError:
+      description: The request body or query is invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details:
+                - { field: phone, message: 'phone must be in international E.164 format, e.g. +919876543210' }
+            requestId: 6f1d2c3b-4a5e-4f60-8b7a-9c0d1e2f3a4b
+    ApiKeyMissing:
+      description: No API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: API_KEY_MISSING, message: Send your API key in the "x-api-key" header } }
+    ApiKeyInvalid:
+      description: Wrong API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: API_KEY_INVALID, message: The API key is not valid } }
+    Unauthorized:
+      description: Missing, invalid or expired JWT (or a missing API key)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingToken:
+              summary: No Authorization header
+              value: { error: { code: UNAUTHORIZED, message: 'Missing bearer token. Send "Authorization: Bearer <token>"' } }
+            invalidToken:
+              summary: Tampered or wrongly signed token
+              value: { error: { code: UNAUTHORIZED, message: Invalid token } }
+            expiredToken:
+              summary: Token past its exp claim
+              value: { error: { code: UNAUTHORIZED, message: Token has expired } }
+    Forbidden:
+      description: Logged in, but the role is not allowed to do this (or wrong API key)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: FORBIDDEN, message: 'This action requires one of these roles: officer, admin' } }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: NOT_FOUND, message: Complaint not found } }
+    AddressNotFound:
+      description: The geocoding provider could not find the address
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: ADDRESS_NOT_FOUND, message: 'Could not find a location for address "Nowhere Street 999"' } }
+    GeocoderUnavailable:
+      description: The external geocoding provider failed or timed out
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: GEOCODER_UNAVAILABLE, message: 'Geocoding provider "nominatim" is unavailable: request timed out' } }
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: RATE_LIMITED, message: 'Too many requests. Limit is 10 per 60s; retry after the time in the Retry-After header.' } }

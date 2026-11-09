@@ -1,0 +1,62 @@
+
+> smart-city-portal@2.0.0 test
+> node node_modules/mocha/bin/mocha.js
+
+
+
+  Flow 1: Login + JWT verification
+    ✔ registers a citizen and returns a signed JWT with the citizen role (60ms)
+    ✔ ignores a self-assigned role: new accounts are always citizens (51ms)
+    ✔ logs in with correct credentials and the token works on a protected route (52ms)
+    ✔ rejects a wrong password with 401 and a generic message (108ms)
+    ✔ rejects requests without a token, with a tampered token, a foreign token or an expired token (54ms)
+    ✔ validates registration input and reports every invalid field
+    ✔ rejects a duplicate email with 409 (52ms)
+
+  Flow 2: Complaint creation and status change
+    ✔ creates a complaint and stores the geocoded latitude/longitude
+    ✔ rejects an invalid complaint body with field-level errors
+    ✔ lets an officer move a complaint through open -> in_progress -> resolved and SMSes the citizen each time
+    ✔ refuses transitions that are not allowed (409)
+    ✔ shows citizens only their own complaints, but staff see all (55ms)
+
+  Flow 3: Role-based access control
+    ✔ blocks a citizen from deleting a complaint (403) and leaves it in place
+    ✔ blocks an officer from deleting a complaint (403)
+    ✔ lets an admin delete a complaint (204), after which it is gone (404)
+    ✔ blocks a citizen from changing complaint status (403) and sends no SMS
+    ✔ blocks a citizen from viewing someone else's complaint (403) (51ms)
+    ✔ blocks non-admins from admin-only user routes
+    ✔ requires a token at all (401 without one)
+
+  Flow 4: External API integrations (mocked)
+    Geocoding (OpenStreetMap Nominatim)
+      ✔ geocodes an address with the correct request and caches the result
+      ✔ reverse-geocodes coordinates to an address
+      ✔ returns 422 ADDRESS_NOT_FOUND for an unknown address, both in maps and complaint creation
+      ✔ returns 502 GEOCODER_UNAVAILABLE when the provider fails
+      ✔ returns 502 GEOCODER_UNAVAILABLE when the provider cannot be reached at all
+      ✔ computes the distance between two places
+    Nearby complaints (within X km)
+      ✔ returns only complaints inside the radius, nearest first, with public fields only
+      ✔ accepts an address as the centre and a larger radius
+      ✔ validates the radius and coordinates
+    SMS (Twilio)
+      ✔ keeps the status change when the SMS fails, and records the failure in the log (53ms)
+      ✔ mock provider: sends without any network call and logs only a masked number
+
+  Flow 5: API gateway
+    routing and API keys
+      ✔ rejects /api requests without an API key (401) or with a wrong one (403)
+      ✔ routes each path prefix to the right service (53ms)
+      ✔ does not expose internal service routes or unknown paths
+      ✔ serves health and docs without an API key
+      ✔ returns 502 SERVICE_UNAVAILABLE when a downstream service is down
+      ✔ strips the API key and adds a request ID before forwarding
+    rate limiting
+      ✔ allows 5 requests per window per API key, then returns 429 with Retry-After
+      ✔ limits login attempts per IP more strictly (brute-force protection) (208ms)
+
+
+  38 passing (2s)
+
