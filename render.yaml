@@ -11,8 +11,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Render puts 3 proxies in front of the app (Cloudflare -> load balancer -> ingress).
+      # 3 makes req.ip the real client IP, so per-IP rate limits work and cannot be spoofed.
       - key: TRUST_PROXY
-        value: "1"
+        value: "3"
       - key: JWT_SECRET
         generateValue: true
       - key: INTERNAL_SERVICE_KEY

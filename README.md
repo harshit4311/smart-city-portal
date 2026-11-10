@@ -253,7 +253,9 @@ The repository includes a Render Blueprint, [render.yaml](render.yaml). To deplo
 - Set the same environment variables in the dashboard.
 - The start command is `npm start`.
 - The platform sets `PORT` automatically.
-- Set `TRUST_PROXY=1`.
+- Set `TRUST_PROXY` to the number of proxies in front of the app (usually `1` on Railway/Heroku).
+
+**Why `TRUST_PROXY=3` on Render:** Render puts three proxies in front of the app (Cloudflare, a load balancer and an internal ingress). With fewer hops trusted, the app sees a proxy address instead of the client, and the per-IP login limit splits across several addresses. With `3`, every request from one client has the same rate-limit key, and a fake `X-Forwarded-For` header sent by the client cannot change it. This was checked on the live deployment.
 
 **Free-tier notes:**
 - Render's free service sleeps after inactivity, so the first request can take about 30 seconds.
