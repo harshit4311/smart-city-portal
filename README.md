@@ -22,7 +22,7 @@ Citizens report civic problems such as potholes, garbage or broken streetlights.
 | ✅ Mocha/Chai test suite + instructions | [test/](test/), see [Automated tests](#automated-tests). Current result: [docs/test-output.txt](docs/test-output.txt) (38 passing) |
 | ✅ Third-party integrations | [src/integrations/geocoder.js](src/integrations/geocoder.js) (OpenStreetMap / Google Maps), [src/integrations/sms.js](src/integrations/sms.js) (Twilio / mock) |
 | ✅ Screenshots / screencast of integrations | `npm run demo`, see [Screenshots to capture](#screenshots-to-capture). Sample run: [docs/demo-output.txt](docs/demo-output.txt) |
-| ✅ Bonus: deployment | [render.yaml](render.yaml), see [Deployment](#deployment-bonus). Deployed link: _add after deploying_ |
+| ✅ Bonus: deployment | [render.yaml](render.yaml), see [Deployment](#deployment-bonus). Deployed link: **https://smart-city-portal-6g0t.onrender.com** (docs at `/docs`) |
 | ✅ Bonus: `.env` secrets and secure access patterns | [.env.example](.env.example), [src/config.js](src/config.js), see [Security patterns](#security-patterns) |
 
 ---
