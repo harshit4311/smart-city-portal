@@ -47,8 +47,11 @@ describe('Flow 5: API gateway', () => {
     });
 
     it('returns 502 SERVICE_UNAVAILABLE when a downstream service is down', async () => {
+      // Reuse the test secrets so the test never depends on a local .env file.
       const config = loadConfig({
         logRequests: false,
+        jwt: env.config.jwt,
+        internalServiceKey: env.config.internalServiceKey,
         gateway: { apiKeys: [API_KEY] },
         serviceUrls: { users: 'http://127.0.0.1:9', complaints: 'http://127.0.0.1:9', geo: 'http://127.0.0.1:9' },
       });
@@ -67,9 +70,19 @@ describe('Flow 5: API gateway', () => {
         const s = echo.listen(0, '127.0.0.1', () => r(s));
       });
       const url = `http://127.0.0.1:${server.address().port}`;
-      const config = loadConfig({ logRequests: false, gateway: { apiKeys: [API_KEY] }, serviceUrls: { users: url } });
-      const res = await request(createGateway(config)).get('/api/users/me').set('x-api-key', API_KEY).expect(200);
-      server.close();
+      let res;
+      try {
+        const config = loadConfig({
+          logRequests: false,
+          jwt: env.config.jwt,
+          internalServiceKey: env.config.internalServiceKey,
+          gateway: { apiKeys: [API_KEY] },
+          serviceUrls: { users: url },
+        });
+        res = await request(createGateway(config)).get('/api/users/me').set('x-api-key', API_KEY).expect(200);
+      } finally {
+        server.close(); // always release the port, even if the request fails
+      }
       expect(seen).to.not.have.property('x-api-key');
       expect(seen['x-request-id']).to.equal(res.headers['x-request-id']);
       expect(seen['x-forwarded-for']).to.be.a('string');
